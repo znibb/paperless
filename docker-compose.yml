@@ -1,20 +1,17 @@
 services:
   paperless:
-    image: paperlessngx/paperless-ngx:latest
+    image: ghcr.io/paperless-ngx/paperless-ngx:latest
     container_name: paperless
     restart: unless-stopped
-    secrets:
-      - admin_password
-      - db_password
-      - email_password
     environment:
+      PAPERLESS_SECRET_KEY: ${PAPERLESS_SECRET_KEY:?}
       PAPERLESS_TIME_ZONE: ${TZ}
       PAPERLESS_URL: https://paperless.${TRAEFIK_DOMAIN:?}
-      PAPERLESS_REDIS: redis://redis:6379
+      PAPERLESS_REDIS: redis://cache:6379
       PAPERLESS_DBHOST: db
-      PAPERLESS_DBPASS_FILE: /run/secrets/db_password
-      PAPERLESS_ADMIN_USER: admin
-      PAPERLESS_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+      PAPERLESS_DBPASS: ${DB_PASS:?}
+      PAPERLESS_ADMIN_USER: ${ADMIN_USER:?}
+      PAPERLESS_ADMIN_PASSWORD: ${ADMIN_PASSWORD:?}
       USERMAP_UID: ${UID:?}
       USERMAP_GID: ${GID:?}
       PAPERLESS_EMAIL_HOST: ${EMAIL_HOST:?}
@@ -22,19 +19,19 @@ services:
       PAPERLESS_EMAIL_USE_TLS: ${EMAIL_USE_TLS:?}
       PAPERLESS_EMAIL_USE_SSL: ${EMAIL_USE_SSL:?}
       PAPERLESS_EMAIL_HOST_USER: ${EMAIL_USER:?}
-      PAPERLESS_EMAIL_HOST_PASSWORD_FILE: /run/secrets/email_password
+      PAPERLESS_EMAIL_HOST_PASSWORD: ${EMAIL_PASSWORD:?}
       PAPERLESS_FILENAME_FORMAT: ${PAPERLESS_FILENAME_FORMAT}
-      PAPERLESS_APP_LOGO: /logo/paperless-ngx.png
+      PAPERLESS_SOCIAL_ACCOUNT_DEFAULT_GROUPS: ${PAPERLESS_DEFAULT_GROUPS:-Basic}
       PAPERLESS_APP_TITLE: Paperless
-      PAPERLESS_LOGOUT_REDIRECT_URL: https://auth.${TRAEFIK_DOMAIN:?}/outpost.goauthentik.io/sign_out
-      PAPERLESS_DISABLE_REGULAR_LOGIN: false
-      PAPERLESS_REDIRECT_LOGIN_TO_SSO: false
       PAPERLESS_ENABLE_HTTP_REMOTE_USER: true
       PAPERLESS_HTTP_REMOTE_USER_HEADER_NAME: HTTP_X_AUTHENTIK_USERNAME
+
+      # SSO settings
       PAPERLESS_APPS: allauth.socialaccount.providers.openid_connect
       PAPERLESS_SOCIALACCOUNT_PROVIDERS: >
         {
           "openid_connect": {
+            "OAUTH_PKCE_ENABLED": true,
             "APPS": [
               {
                 "provider_id": "authentik",
@@ -42,20 +39,24 @@ services:
                 "client_id": "${AUTHENTIK_CLIENT_ID:?}",
                 "secret": "${AUTHENTIK_SECRET:?}",
                 "settings": {
-                  "server_url": "https://auth.${TRAEFIK_DOMAIN:?}/application/o/paperless/.well-known/openid-configuration"
+                  "server_url": "https://auth.${TRAEFIK_DOMAIN:?}/application/o/paperless/.well-known/openid-configuration",
+                  "fetch_userinfo": true
                 }
               }
             ],
-            "OAUTH_PKCE_ENABLED": "True"
+            "SCOPE": ["openid", "profile", "email"]
           }
         }
+      PAPERLESS_LOGOUT_REDIRECT_URL: https://auth.${TRAEFIK_DOMAIN:?}/application/o/paperless/end-session/"
+      PAPERLESS_SOCIAL_AUTO_SIGNUP: false
+      PAPERLESS_SOCIALACCOUNT_ALLOW_SIGNUPS: true
+      PAPERLESS_DISABLE_REGULAR_LOGIN: false
+      PAPERLESS_REDIRECT_LOGIN_TO_SSO: false
     labels:
       - traefik.enable=true
-      - traefik.http.routers.paperless.entrypoints=https
-      - traefik.http.routers.paperless.rule=Host(`paperless.${TRAEFIK_DOMAIN:?}`)
-      - traefik.http.routers.paperless.tls=true
-      - traefik.http.routers.paperless.tls.certresolver=cloudflare
       - traefik.http.services.paperless.loadbalancer.server.port=8000
+      - traefik.http.routers.paperless.rule=Host(`paperless.${TRAEFIK_DOMAIN:?}`)
+      - traefik.http.routers.paperless.entrypoints=websecure
       - traefik.http.routers.paperless.middlewares=authentik@file
     networks:
       - paperless
@@ -63,42 +64,36 @@ services:
     ports:
       - 8000:8000
     volumes:
-      - ./data/data:/usr/src/paperless/data
-      - ./data/media:/usr/src/paperless/media
-      - ./data/export:/usr/src/paperless/export
-      - ./data/consume:/usr/src/paperless/consume
+      - ${DATA_DIR:?}/data:/usr/src/paperless/data
+      - ${DATA_DIR:?}/media:/usr/src/paperless/media
+      - ${DATA_DIR:?}/export:/usr/src/paperless/export
+      - ${DATA_DIR:?}/consume:/usr/src/paperless/consume
     depends_on:
       - cache
       - db
 
   cache:
-    image: docker.io/library/redis:7
+    image: valkey/valkey:8.1.2-alpine
     container_name: paperless-cache
-    hostname: redis
     restart: unless-stopped
-    environment:
-      TZ: ${TZ}
     networks:
       - paperless
     volumes:
       - cache:/data
 
   db:
-    image: docker.io/library/postgres:16
+    image: docker.io/library/postgres:18
     container_name: paperless-db
-    user: ${UID:?}:${GID:?}
     restart: unless-stopped
-    secrets:
-      - db_password
     environment:
       POSTGRES_DB: paperless
       POSTGRES_USER: paperless
-      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+      POSTGRES_PASSWORD: ${DB_PASS:?}
       TZ: ${TZ}
     networks:
       - paperless
     volumes:
-      - ./data/db:/var/lib/postgresql/data
+      - ${DB_DIR:?}:/var/lib/postgresql
 
 networks:
   paperless:
@@ -106,15 +101,6 @@ networks:
   traefik:
     external: true
 
-secrets:
-  admin_password:
-    file: ./secrets/admin_password.secret
-  db_password:
-    file: ./secrets/db_password.secret
-  email_password:
-    file: ./secrets/email_password.secret
-  secret_key:
-    file: ./secrets/secret_key.secret
-
 volumes:
   cache:
+    name: paperless-cache
